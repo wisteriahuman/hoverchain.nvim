@@ -20,6 +20,9 @@ function M.close()
   if state.closed_autocmd then
     pcall(api.nvim_del_autocmd, state.closed_autocmd)
   end
+  if state.origin_autocmd then
+    pcall(api.nvim_del_autocmd, state.origin_autocmd)
+  end
   if state.win and api.nvim_win_is_valid(state.win) then
     api.nvim_win_close(state.win, true)
   end
@@ -28,7 +31,7 @@ function M.close()
   end
 end
 
-local function draw(page)
+local function draw(page, focus)
   local state = M.state
   local lines = vim.split(page.markdown, "\n", { plain = true })
   local width = math.min(M.config.max_width, math.max(20, vim.o.columns - 4))
@@ -73,9 +76,11 @@ local function draw(page)
   }
   if state.win and api.nvim_win_is_valid(state.win) then
     api.nvim_win_set_config(state.win, config)
-    api.nvim_set_current_win(state.win)
+    if focus then
+      api.nvim_set_current_win(state.win)
+    end
   else
-    state.win = api.nvim_open_win(state.buf, true, config)
+    state.win = api.nvim_open_win(state.buf, focus, config)
   end
   vim.wo[state.win].wrap = true
   vim.wo[state.win].conceallevel = 2
@@ -84,13 +89,38 @@ local function draw(page)
   api.nvim_win_set_cursor(state.win, page.cursor or { 1, 0 })
 end
 
-local function push(page)
+local function push(page, focus)
   local state = M.state
   if state.win and api.nvim_win_is_valid(state.win) and #state.pages > 0 then
     state.pages[#state.pages].cursor = api.nvim_win_get_cursor(state.win)
   end
   state.pages[#state.pages + 1] = page
-  draw(page)
+  draw(page, focus ~= false)
+end
+
+local function watch_origin(state)
+  state.origin_autocmd = api.nvim_create_autocmd(
+    { "CursorMoved", "CursorMovedI", "InsertEnter", "BufLeave", "WinLeave" },
+    {
+      group = "Hoverchain",
+      buffer = state.origin_buf,
+      callback = function(args)
+        vim.schedule(function()
+          if M.state ~= state or api.nvim_get_current_win() == state.win then
+            return
+          end
+          if
+            api.nvim_get_current_win() ~= state.origin_win
+            or api.nvim_get_current_buf() ~= state.origin_buf
+            or args.event == "InsertEnter"
+            or not vim.deep_equal(api.nvim_win_get_cursor(state.origin_win), state.origin_cursor)
+          then
+            M.close()
+          end
+        end)
+      end,
+    }
+  )
 end
 
 local function navigate(jump)
@@ -147,7 +177,7 @@ function M.back()
   state.busy = false
   if #state.pages > 1 then
     table.remove(state.pages)
-    draw(state.pages[#state.pages])
+    draw(state.pages[#state.pages], true)
   else
     M.close()
   end
@@ -163,26 +193,35 @@ function M.hover()
     end
     return
   end
+  if state.busy and state.session and api.nvim_get_current_win() == state.origin_win then
+    state.focus_when_ready = true
+    return
+  end
   M.close()
   state = M.state
   state.origin_win = api.nvim_get_current_win()
+  state.origin_buf = api.nvim_get_current_buf()
+  state.origin_cursor = api.nvim_win_get_cursor(state.origin_win)
+  watch_origin(state)
   if M.config.mock then
     push({
       markdown = "```go\ntype Example struct{}\n```\n\nExample にカーソルを置いて K。",
       header = { imports = {} },
       anchor = "Example",
-    })
+    }, false)
     return
   end
   local buf = api.nvim_get_current_buf()
   local client = vim.lsp.get_clients({ bufnr = buf, name = "gopls" })[1]
   if not client or not client.initialized then
     notify("このバッファに gopls が接続されていません")
+    M.close()
     return
   end
   local session, err = lsp.new(client, buf)
   if not session then
     notify(err)
+    M.close()
     return
   end
   state.session, state.busy = session, true
@@ -198,7 +237,7 @@ function M.hover()
     else
       -- Initial hover signatures are qualified relative to the user's source file.
       page.header.imports = go.header(lsp.source(params.textDocument.uri)).imports
-      push(page)
+      push(page, state.focus_when_ready == true)
     end
   end)
 end

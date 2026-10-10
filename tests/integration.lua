@@ -38,6 +38,10 @@ local function place(buf, needle, word)
 end
 local function follow(needle, word)
   local count = #hc.state.pages
+  if api.nvim_get_current_win() ~= hc.state.win then
+    hc.hover()
+    assert(api.nvim_get_current_win() == hc.state.win and #hc.state.pages == count, "second K did not focus hover")
+  end
   place(hc.state.buf, needle, word)
   hc.hover()
   wait(function()
@@ -50,6 +54,7 @@ hc.hover()
 wait(function()
   return #hc.state.pages == 1
 end, "initial hover failed")
+assert(api.nvim_get_current_buf() == origin, "first K moved focus away from source")
 assert(hc.state.pages[1].markdown:find("field API *api.Client", 1, true))
 local page = follow("field API *api.Client", "Client")
 assert(page.anchor == "Client" and page.package_path == "example.com/hoverchain-tests/model")
@@ -121,6 +126,16 @@ vim.wait(300, function()
 end, 20)
 assert(#hc.state.pages == 0 and hc.state.win == nil)
 assert(not vim.bo[origin].modified)
+
+-- Two presses before the first response still enter the same preview.
+hc.hover()
+local pending_session = hc.state.session
+hc.hover()
+assert(hc.state.session == pending_session, "second K restarted the pending request")
+wait(function()
+  return #hc.state.pages == 1 and api.nvim_get_current_win() == hc.state.win
+end, "rapid KK did not focus hover")
+hc.close()
 
 -- Import aliases in an unsaved buffer must be used without writing that buffer.
 local before = api.nvim_buf_get_lines(origin, 0, -1, false)
