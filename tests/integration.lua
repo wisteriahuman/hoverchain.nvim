@@ -86,7 +86,31 @@ page = follow("Do(req *Request)", "Do")
 assert(page.anchor == "Client.Do")
 page = follow("Do(req *Request)", "Request")
 assert(page.anchor == "Request" and page.package_path == "net/http")
+
+-- After gd into a dependency, new hover sessions must keep their query file
+-- inside the importing workspace, never inside GOROOT or a module cache.
+place(hc.state.buf, "type Request struct", "Request")
+hc.definition()
+wait(function()
+  return hc.state.win == nil
+end, "dependency gd failed")
+local dependency = api.nvim_get_current_buf()
+assert(api.nvim_buf_get_name(dependency):find("/net/http/request.go", 1, true))
+vim.lsp.buf_attach_client(dependency, id)
+place(dependency, "type Request struct", "Request")
+hc.hover()
+wait(function()
+  return #hc.state.pages == 1
+end, "dependency source hover failed")
+assert(api.nvim_get_current_buf() == dependency, "dependency hover stole focus")
+page = follow("Clone(ctx context.Context) *Request", "Clone")
+assert(page.anchor == "Request.Clone")
+local dependency_probe = vim.uri_to_fname(hc.state.session.probe_uri)
+assert(vim.fs.dirname(dependency_probe) == fixtures, "query file escaped importing workspace")
+assert(vim.uv.fs_stat(dependency_probe) == nil, "query file was written to disk")
+assert(not vim.bo[dependency].modified, "dependency source was modified")
 hc.close()
+vim.cmd.edit(fixtures .. "/main.go")
 
 -- Promoted methods must resolve to their actual declaring receiver.
 place(origin, "_ = b.API", "API")
